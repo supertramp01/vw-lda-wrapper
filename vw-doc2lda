@@ -1,0 +1,10 @@
+#!/bin/sh
+#Ariel Faigon's script to convert text documents to vw lda format 
+tr -cs '[:alpha:]' '\012' < "$@" | tr '[:upper:]' '[:lower:]' | sort | uniq -c | sort -n | perl -ne '
+    BEGIN { print "|"; }
+    if (/^\s*(\d+)\s+(\S+)\s*$/) {
+        print " $2:$1";
+    } else {
+        next;
+    }
+    END { print "\n"}'

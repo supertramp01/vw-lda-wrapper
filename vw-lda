@@ -1,0 +1,334 @@
+#!/usr/bin/python
+__author__ = 'chetan'
+
+import os, sys
+import argparse
+import traceback
+import re, operator
+import subprocess
+import csv, time
+import math
+
+
+#'''
+#Descripton of vw_lda wrapper
+#
+#Input dataset: accepts two kinds of inputs, 0
+#0) flat file in vw format of the type:
+#| word1:count1 word2:count2 word3:count3
+#| word1:count4 word7:cound9
+#....
+#
+#1) dir containing documents/files
+#
+# The script executes the following steps:
+# 0. Read the input file to prepare the dataset
+# 1. Calculate the term frequency and map each word to an integer
+# 2. Invoke vw with lda
+# 3. Map the integers back to words
+# 4. Write the output to file
+# 5. Output partial results on to the console
+# 6. The following intermediate files are generated:
+#       a. lda_ip.vw : vw input file in word:count format
+#       b. hashed_ip_lda.vw : input file in vw format
+#       c. hash_values.csv : integer mapping for each word
+#       d. lda.model.vw : vw lda output with hash values for words
+
+
+
+class vw_lda(object):
+
+    def __init__(self):
+        self.hash = {}
+        self.count = 0
+        self.hash_values = []
+        self.new_hash = {}
+        self.num_topics = 0
+        self.op_file = ""
+        self.word_list = []
+        self.lda_ipfile = "lda_ip.vw"
+        self.hashed_lda_ipfile = "hashed_lda_ip.vw"
+        self.hashed_lda_model = "hashed_lda_model.vw"
+        self.hash_values = "hash_values.csv"
+        pass
+
+    def create_hash(self, doc):
+        '''
+        Creates hash value for each unseen word
+        '''
+        words = re.split("[\s+]", doc)
+        words = words[1:]
+        wrd_lst = []
+        for w in words:
+            wrd_lst = re.split(":",w)
+            if wrd_lst[0] not in self.hash.keys():
+                self.hash[wrd_lst[0]] = self.count
+                self.count += 1
+
+    def calc_bits_required(self):
+        '''
+        Calculates the value of b based on the unique word cound
+        '''
+        return int(math.ceil(math.log(self.count,2)))
+
+    def read_dataset(self, f):
+        '''
+        reads the input file and creates a hash for each line
+        file is in vw format without the freq count for each word
+        '''
+        with open(f, "r") as input_file:
+            lines = input_file.readlines()
+            input_file.close()
+            for line in lines:
+                self.create_hash(line)
+        return
+
+    def transform_inputs(self,f):
+        '''
+        replaces the vw file with word:count format to hash_value:count format
+        '''
+        f1 = open(self.hashed_lda_ipfile, "w")
+        with open(f, "r") as input_file:
+            lines = input_file.readlines()
+            input_file.close()
+            for line in lines:
+                l = self.get_hashed_line(line)
+                f1.write(l)
+        f1.close()
+        return
+
+    def get_hashed_line(self, line):
+        '''
+        does a lookup for each word to get its corresponding hash value
+        '''
+        words = re.split("\s+", line)
+        words = words[1:]
+        op = []
+        for w in words:
+            wrd_lst = re.split(":",w)
+            v = str(self.hash[wrd_lst[0]])
+            op.append(v)
+        op = "| " + " ".join(op) + "\n"
+        self.print_hash()
+        return op
+
+    def print_hash(self):
+        '''
+        prints the hash for each unique word to an
+        intermediate file in csv format
+        '''
+        sorted_x = sorted(self.hash.items(), key=operator.itemgetter(1))
+        ofile = open(self.hash_values, "w")
+        for l in sorted_x:
+            s = str(l[1]) + "," + l[0] + "\n"
+            ofile.write(s)
+        ofile.close()
+        return
+
+    def read_input_files(self, src_dir, num_docs):
+        '''
+        read input files from src_dir
+        invokes vw2lda shell script to convert file content to
+        vw-lda format of type word:count
+        '''
+        lda_ip = open(self.lda_ipfile, "w")
+        files = os.listdir(src_dir)
+        file_count = 0
+        for f in files:
+            if(file_count > num_docs):
+                break
+            file_count += 1
+            inp_file = src_dir + "/" + f
+            str2vw_cmd = "./vw-doc2lda " + str(inp_file)
+            str2vw_list = re.split("\s+", str2vw_cmd)
+            #print str2vw_list
+            op = subprocess.check_output(str2vw_list)
+            lda_ip.write(op + "\n")
+
+        lda_ip.close()
+        return
+
+
+    def run_vw(self, args):
+        """
+        runs vw with required inputs, output of vw is dumped onto the console
+        vw -d hashed_lda_ip.vw -b 8 --lda 2 --lda_D 5
+        --readable_model lda.model.vw
+        """
+        b = self.calc_bits_required()
+        vw_cmd_line = "vw -d " + str(self.hashed_lda_ipfile) + " -b " + str(b) \
+            + " --lda " + str(args.lda) + " --lda_D " + str(args.lda_d) \
+            + " --readable_model " + str(self.hashed_lda_model)
+
+        #optional arguments if present
+        if (args.lda_alpha):
+            vw_cmd_line = vw_cmd_line +  "--lda_alpha " + str(args.lda_alpha)
+        if (args.lda_epsilon):
+            vw_cmd_line = vw_cmd_line + " --lda_epsilon "
+            + str(args.lda_epsilon)
+        if (args.lda_rho):
+            vw_cmd_line = vw_cmd_line + " --lda_rho" + str(args.lda_rho)
+        #print vw_cmd_line
+        inp = re.split("\s+", vw_cmd_line)
+        output = subprocess.check_output(inp)
+        return
+
+    def process_args(self,args):
+        '''
+        reads command line arguments, transforms inputs,
+        runs vw and transforms outputs
+        '''
+        self.op_file = args.rd_model
+        self.num_topics = args.lda
+        self.read_input_files(args.src_dir, args.lda_d)
+        self.read_dataset(self.lda_ipfile)
+        self.transform_inputs(self.lda_ipfile)
+        self.run_vw(args)
+        self.transform_outputs(args.max_terms)
+
+        return
+
+    def populate_hash(self):
+        '''
+        get word for each hash value to transform output
+        '''
+        with open(self.hash_values, "r") as hfile:
+            self.hash_values = csv.reader(hfile, delimiter=",")
+            self.new_hash = {}
+            for s in self.hash_values:
+                self.new_hash[s[0]] = s[1]
+            self.max_word_count = int(s[0])
+        print self.max_word_count
+        return
+
+    def transform_outputs(self, max_terms):
+        '''
+        Parse the vw lda output to map integers back to words
+        '''
+        self.populate_hash()
+        self.f = open(self.hashed_lda_model, "r")
+        lines = self.f.readlines()
+        p = re.compile("^options")
+        got_data = 0
+        topics = []
+        line_count = 0
+        topic1 = {}
+        topic2 = {}
+        num_topics = 0
+        for l in lines:
+            if (got_data):
+                word_list = re.split("\s+",l)
+                w = self.new_hash[str(word_list[0])]
+                num_topics = len(word_list) - 1
+                if ( int(word_list[0]) >= self.max_word_count):
+                    break
+                line_count += 1
+                #topic1[w] = word_list[1]
+                #topic2[w] = word_list[2]
+                top = {}
+                top['word'] = w
+                for i in range(1,num_topics):
+                    k = "topic" + str(i)
+                    top[k] = float(word_list[i])
+                topics.append(top)
+            if (p.match(l)):
+                got_data = 1
+                continue
+
+        self.f.close()
+        #print topics on to the consolde and write to file
+        self.print_topics_summary(topics, num_topics,  max_terms)
+
+        return
+
+
+    def print_topics_summary(self,topics, num_topics, top_n):
+        '''
+        For each topic, print the word and its corresponding weight
+        in descending order
+        '''
+        op_file = open(self.op_file,"w")
+        for i in range (1,num_topics):
+            sorted_topics = []
+            topic = "topic" + str(i)
+            sorted_topics = sorted(topics,key=lambda x:x[topic], reverse=True)
+            count = 0
+            print topic
+            l = ''
+            op_file.write(topic + "\n")
+            for top in sorted_topics:
+                if (count <= top_n):
+                    print l
+                count += 1
+                l = "%20s : %5f" % (top['word'] , top[topic])
+                op_file.write(str(l) + "\n")
+
+        op_file.close()
+        return
+
+    def print_sorted_dict(self, d, top_n):
+        '''
+        helper function to print top_n keys dictionary in sorted order
+        '''
+        sorted_x = sorted(d.items(), key=operator.itemgetter(1), reverse=True)
+        count = 0
+        for x in sorted_x:
+            if (count > top_n):
+                break
+            print("%20s : %5f" % (x[0], float(x[1])))
+            count += 1
+
+        return sorted_x
+
+
+def main(argv):
+    '''
+    read command line arguments and process them
+    '''
+    #mandatory arguments
+    helper = argparse.ArgumentParser(description='Inputs for using vw with lda')
+    helper.add_argument('-s','--src_dir', dest='src_dir', type=str,
+                        required=True,
+                        help='Directory containing input documents', metavar='')
+    helper.add_argument('-t', '--lda', dest='lda',
+                        help='Run lda with <int> topics',
+                        required=True, metavar='')
+    helper.add_argument('-n','--lda_D', dest='lda_d', type=int,required=True,
+                        help='Number of documents', metavar='')
+
+    #optional arguments
+    helper.add_argument('-b', '--bit_precision', default=18, dest='b',
+                        help='Number of bits in the feature table', metavar='')
+    helper.add_argument('-a', '--lda_alpha', dest='lda_alpha', type=float,
+                        required=False,
+                        help='Prior on sparsity of per document topic',
+                        metavar='')
+    helper.add_argument('-r', '--lda_rho', dest='lda_rho', type=float,
+                        required=False,
+                        help='Prior on sparsity of topic distributions',
+                        metavar='')
+    helper.add_argument('-e', '--lda_epsilon', dest='lda_epsilon', type=float,
+                        required=False, help='Loop convergence threshold',
+                        metavar='')
+    helper.add_argument('-m','--readable_model', dest='rd_model', type=str,
+                        required=False, default="op.mode", metavar='',
+                        help='Output humanreadable final regressor')
+    helper.add_argument('-mt','--max_terms', dest='max_terms', default=10,
+                        type=int,required=False, metavar='',
+                        help='Max terms per topic to print on the console')
+    #helper.add_argument('-d', '--data', dest='d', help='Example dataset',
+    #required=False, metavar='')
+
+    args = ''
+    try:
+        args = helper.parse_args()
+        vw_lda().process_args(args)
+    except Exception, e:
+        print "Exception: " + str(e)
+        traceback.print_exc()
+
+    print("The arguments are", args)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
